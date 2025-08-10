@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Graph Editor with A* Shortest Path</title>
+    <style>
+      body {
+        font-family: system-ui, Arial, sans-serif;
+        margin: 0;
+        background: #f6f7f9;
+      }
+      header {
+        background: #1f2937;
+        color: #fff;
+        padding: 12px 16px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 18px;
+      }
+      #toolbar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 10px 16px;
+        background: #fff;
+        border-bottom: 1px solid #e5e7eb;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      #toolbar button,
+      #toolbar select,
+      #toolbar input {
+        padding: 6px 10px;
+        border: 1px solid #d1d5db;
+        background: #fff;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      #toolbar button.active {
+        background: #2563eb;
+        color: #fff;
+        border-color: #2563eb;
+      }
+      #toolbar span.sep {
+        width: 1px;
+        height: 26px;
+        background: #e5e7eb;
+        display: inline-block;
+      }
+      #status {
+        margin-left: auto;
+        color: #374151;
+        font-size: 13px;
+      }
+      #wrap {
+        padding: 12px;
+      }
+      #canvas {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        display: block;
+        margin: 0 auto;
+        touch-action: none;
+      }
+      #help {
+        max-width: 980px;
+        margin: 12px auto;
+        color: #374151;
+        font-size: 13px;
+        line-height: 1.5;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .badge {
+        padding: 2px 6px;
+        background: #eef2ff;
+        color: #3730a3;
+        border-radius: 10px;
+        font-size: 12px;
+      }
+      .hint {
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Graph Editor (Canvas) — A* Shortest Path</h1>
+    </header>
+
+    <div id="toolbar">
+      <button id="mode-add" class="active">Add/Move Nodes</button>
+      <button id="mode-edge">Add Edges</button>
+      <button id="mode-select">Select Start/Goal</button>
+      <span class="sep"></span>
+      <button id="btn-run">Run A*</button>
+      <button id="btn-clear-path">Clear Path</button>
+      <button id="btn-clear-graph">Clear Graph</button>
+      <span class="sep"></span>
+      <button id="btn-delete">Delete Selected</button>
+      <button id="btn-edit-weight">Set Edge Weight</button>
+      <span class="sep"></span>
+      <label class="hint"
+        >Node radius:
+        <input
+          id="node-radius"
+          type="number"
+          min="6"
+          max="28"
+          step="1"
+          value="16"
+          style="width: 56px"
+        />
+      </label>
+      <span id="status">Mode: Add/Move Nodes</span>
+    </div>
+
+    <div id="wrap">
+      <canvas id="canvas" width="980" height="540"></canvas>
+    </div>
+
+    <div id="help">
+      <div><span class="badge">How to use</span></div>
+      <p>
+        - Add/Move Nodes: Click empty space to create a node; drag a node to
+        move it. Click a node to select/deselect.<br />
+        - Add Edges: Click and drag from one node to another node to create an
+        undirected edge; release on the target node.<br />
+        - Select Start/Goal: Click a node to set Start (green), then click a
+        different node to set Goal (red). Click again to change.<br />
+        - Edit Weights: Select an edge (click near its middle) or select two
+        nodes (source/target) then click "Set Edge Weight".<br />
+        - Delete Selected: If a node is selected, deletes that node and incident
+        edges; if an edge is selected, deletes that edge.<br />
+        - Run A*: Computes shortest path (with Euclidean heuristic) between
+        Start and Goal and highlights it in gold.<br />
+        - Clear Path: Removes highlighted path only. Clear Graph: removes all
+        nodes and edges.
+      </p>
+    </div>
+
+    <script>
+      (function () {
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        // UI elements
+        const btnModeAdd = document.getElementById("mode-add");
+        const btnModeEdge = document.getElementById("mode-edge");
+        const btnModeSelect = document.getElementById("mode-select");
+        const btnRun = document.getElementById("btn-run");
+        const btnClearPath = document.getElementById("btn-clear-path");
+        const btnClearGraph = document.getElementById("btn-clear-graph");
+        const btnDelete = document.getElementById("btn-delete");
+        const btnEditWeight = document.getElementById("btn-edit-weight");
+        const statusEl = document.getElementById("status");
+        const nodeRadiusInput = document.getElementById("node-radius");
+
+        // State
+        const modes = { ADD: "add", EDGE: "edge", SELECT: "select" };
+        let mode = modes.ADD;
+        let nodeRadius = parseInt(nodeRadiusInput.value, 10) || 16;
+
+        let nodes = []; // {id, x, y}
+        let edges = []; // {u, v, w}
+        let nextId = 1;
+
+        let draggingNodeId = null;
+        let dragOffset = { x: 0, y: 0 };
+
+        let hoverNodeId = null;
+        let hoverEdgeIndex = null;
+
+        let edgeDragFromId = null;
+        let edgePreviewTo = null;
+
+        let selectedNodeId = null; // for delete/select operations
+        let selectedEdgeIndex = null;
+
+        let startNodeId = null;
+        let goalNodeId = null;
+
+        let pathEdges = []; // array of edge indices (or pairs) to highlight
+
+        // Utility
+        function dist(a, b) {
+          const dx = a.x - b.x,
+            dy = a.y - b.y;
+          return Math.hypot(dx, dy);
+        }
+        function distXY(x1, y1, x2, y2) {
+          return Math.hypot(x1 - x2, y1 - y2);
+        }
+
+        function nodeAt(x, y, radius = nodeRadius) {
+          for (let i = nodes.length - 1; i >= 0; i--) {
+            const n = nodes[i];
+            if (dist({ x, y }, n) <= radius) return n.id;
+          }
+          return null;
+        }
+
+        function edgeAt(x, y, threshold = 6) {
+          // returns index of edge if near the segment
+          let nearestIndex = null;
+          let nearestD = Infinity;
+          for (let i = 0; i < edges.length; i++) {
+            const e = edges[i];
+            const nu = getNode(e.u),
+              nv = getNode(e.v);
+            if (!nu || !nv) continue;
+            const d = pointToSegmentDistance(x, y, nu.x, nu.y, nv.x, nv.y);
+            if (d < threshold && d < nearestD) {
+              nearestD = d;
+              nearestIndex = i;
+            }
+          }
+          return nearestIndex;
+        }
+
+        function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+          const vx = x2 - x1,
+            vy = y2 - y1;
+          const wx = px - x1,
+            wy = py - y1;
+          const c1 = vx * wx + vy * wy;
+          if (c1 <= 0) return Math.hypot(px - x1, py - y1);
+          const c2 = vx * vx + vy * vy;
+          if (c2 <= c1) return Math.hypot(px - x2, py - y2);
+          const b = c1 / c2;
+          const bx = x1 + b * vx,
+            by = y1 + b * vy;
+          return Math.hypot(px - bx, py - by);
+        }
+
+        function getNode(id) {
+          return nodes.find((n) => n.id === id) || null;
+        }
+
+        function hasEdge(u, v) {
+          return edges.some(
+            (e) => (e.u === u && e.v === v) || (e.u === v && e.v === u)
+          );
+        }
+
+        function getEdgeIndex(u, v) {
+          return edges.findIndex(
+            (e) => (e.u === u && e.v === v) || (e.u === v && e.v === u)
+          );
+        }
+
+        function addNode(x, y) {
+          const id = nextId++;
+          nodes.push({ id, x, y });
+          return id;
+        }
+
+        function addEdge(u, v, w = null) {
+          if (u === v) return;
+          if (hasEdge(u, v)) return;
+          const nu = getNode(u),
+            nv = getNode(v);
+          if (!nu || !nv) return;
+          // Default weight is Euclidean distance
+          const defW = dist(nu, nv);
+          edges.push({ u, v, w: w != null ? w : Math.round(defW) });
+        }
+
+        function removeNode(id) {
+          nodes = nodes.filter((n) => n.id !== id);
+          edges = edges.filter((e) => e.u !== id && e.v !== id);
+          if (startNodeId === id) startNodeId = null;
+          if (goalNodeId === id) goalNodeId = null;
+          if (selectedNodeId === id) selectedNodeId = null;
+          clearPath();
+        }
+
+        function removeEdgeByIndex(idx) {
+          if (idx == null || idx < 0 || idx >= edges.length) return;
+          edges.splice(idx, 1);
+          clearPath();
+        }
+
+        function clearGraph() {
+          nodes = [];
+          edges = [];
+          nextId = 1;
+          startNodeId = null;
+          goalNodeId = null;
+          selectedNodeId = null;
+          selectedEdgeIndex = null;
+          hoverNodeId = null;
+          hoverEdgeIndex = null;
+          edgeDragFromId = null;
+          edgePreviewTo = null;
+          clearPath();
+        }
+
+        function clearPath() {
+          pathEdges = [];
+        }
+
+        // Drawing
+        function draw() {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Draw edges
+          for (let i = 0; i < edges.length; i++) {
+            const e = edges[i];
+            const u = getNode(e.u),
+              v = getNode(e.v);
+            if (!u || !v) continue;
+
+            const onPath = pathEdges.includes(i);
+            const isSelected = selectedEdgeIndex === i;
+            const isHover = hoverEdgeIndex === i;
+
+            ctx.lineWidth = onPath ? 4 : 2;
+            ctx.strokeStyle = onPath
+              ? "#f59e0b"
+              : isSelected
+              ? "#2563eb"
+              : "#9ca3af";
+            ctx.beginPath();
+            ctx.moveTo(u.x, u.y);
+            ctx.lineTo(v.x, v.y);
+            ctx.stroke();
+
+            // Weight label
+            const mx = (u.x + v.x) / 2;
+            const my = (u.y + v.y) / 2;
+            const label = String(e.w);
+            ctx.fillStyle = onPath ? "#92400e" : "#374151";
+            ctx.font = "12px system-ui, Arial";
+            ctx.fillRect(
+              mx - ctx.measureText(label).width / 2 - 4,
+              my - 16,
+              ctx.measureText(label).width + 8,
+              16
+            );
+            ctx.fillStyle = "#fff";
+            ctx.fillText(label, mx - ctx.measureText(label).width / 2, my - 4);
+
+            if (isHover && !onPath) {
+              // Subtle highlight aura
+              ctx.lineWidth = 6;
+              ctx.strokeStyle = "rgba(37, 99, 235, 0.2)";
+              ctx.beginPath();
+              ctx.moveTo(u.x, u.y);
+              ctx.lineTo(v.x, v.y);
+              ctx.stroke();
+            }
+          }
+
+          // Edge preview while dragging in EDGE mode
+          if (mode === modes.EDGE && edgeDragFromId && edgePreviewTo) {
+            const a = getNode(edgeDragFromId);
+            const b = edgePreviewTo;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 6]);
+            ctx.strokeStyle = "#2563eb";
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          // Draw nodes
+          for (const n of nodes) {
+            const isHover = hoverNodeId === n.id;
+            const isSelected = selectedNodeId === n.id;
+            const isStart = startNodeId === n.id;
+            const isGoal = goalNodeId === n.id;
+
+            const fill = isStart ? "#22c55e" : isGoal ? "#ef4444" : "#ffffff";
+            const stroke = isSelected ? "#2563eb" : "#111827";
+            const ring = isHover ? "rgba(37, 99, 235, 0.18)" : null;
+
+            if (ring) {
+              ctx.beginPath();
+              ctx.arc(n.x, n.y, nodeRadius + 6, 0, Math.PI * 2);
+              ctx.fillStyle = ring;
+              ctx.fill();
+            }
+
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, nodeRadius, 0, Math.PI * 2);
+            ctx.fillStyle = fill;
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = stroke;
+            ctx.stroke();
+
+            // Node id
+            ctx.fillStyle = isStart || isGoal ? "#ffffff" : "#111827";
+            ctx.font = "bold 12px system-ui, Arial";
+            const label = String(n.id);
+            ctx.fillText(
+              label,
+              n.x - ctx.measureText(label).width / 2,
+              n.y + 4
+            );
+          }
+        }
+
+        // Mode handling
+        function setMode(newMode) {
+          mode = newMode;
+          btnModeAdd.classList.toggle("active", mode === modes.ADD);
+          btnModeEdge.classList.toggle("active", mode === modes.EDGE);
+          btnModeSelect.classList.toggle("active", mode === modes.SELECT);
+
+          // Reset transient selections for clarity
+          hoverNodeId = null;
+          hoverEdgeIndex = null;
+          selectedEdgeIndex = null;
+          edgeDragFromId = null;
+          edgePreviewTo = null;
+
+          const text =
+            mode === modes.ADD
+              ? "Add/Move Nodes"
+              : mode === modes.EDGE
+              ? "Add Edges"
+              : "Select Start/Goal";
+          statusEl.textContent = `Mode: ${text}`;
+          draw();
+        }
+
+        // A* implementation
+        function runAStar() {
+          if (!startNodeId || !goalNodeId) {
+            alert(
+              "Select Start and Goal nodes (Select Start/Goal mode) before running A*."
+            );
+            return;
+          }
+          const start = startNodeId,
+            goal = goalNodeId;
+
+          // Build adjacency list
+          const adj = new Map(); // id -> [{to, w, edgeIndex}]
+          for (const n of nodes) adj.set(n.id, []);
+          edges.forEach((e, i) => {
+            adj.get(e.u).push({ to: e.v, w: e.w, ei: i });
+            adj.get(e.v).push({ to: e.u, w: e.w, ei: i });
+          });
+
+          const h = (id) => {
+            const a = getNode(id),
+              b = getNode(goal);
+            return dist(a, b);
+          };
+
+          const openSet = new Set([start]);
+          const cameFrom = new Map(); // id -> {prev, ei}
+          const gScore = new Map(nodes.map((n) => [n.id, Infinity]));
+          const fScore = new Map(nodes.map((n) => [n.id, Infinity]));
+          gScore.set(start, 0);
+          fScore.set(start, h(start));
+
+          function lowestF() {
+            let minId = null,
+              minVal = Infinity;
+            for (const id of openSet) {
+              const f = fScore.get(id) ?? Infinity;
+              if (f < minVal) {
+                minVal = f;
+                minId = id;
+              }
+            }
+            return minId;
+          }
+
+          while (openSet.size > 0) {
+            const current = lowestF();
+            if (current == null) break;
+            if (current === goal) {
+              reconstructPath(cameFrom, current);
+              return;
+            }
+            openSet.delete(current);
+
+            const neighbors = adj.get(current) || [];
+            for (const { to, w, ei } of neighbors) {
+              const tentativeG = (gScore.get(current) ?? Infinity) + w;
+              if (tentativeG < (gScore.get(to) ?? Infinity)) {
+                cameFrom.set(to, { prev: current, ei });
+                gScore.set(to, tentativeG);
+                fScore.set(to, tentativeG + h(to));
+                if (!openSet.has(to)) openSet.add(to);
+              }
+            }
+          }
+
+          alert("No path found between Start and Goal.");
+          clearPath();
+          draw();
+        }
+
+        function reconstructPath(cameFrom, current) {
+          const edgeIdxs = [];
+          let c = current;
+          while (cameFrom.has(c)) {
+            const { prev, ei } = cameFrom.get(c);
+            edgeIdxs.push(ei);
+            c = prev;
+          }
+          pathEdges = edgeIdxs.reverse();
+          draw();
+        }
+
+        // Event handlers
+        function getMousePos(evt) {
+          const rect = canvas.getBoundingClientRect();
+          return {
+            x: evt.clientX - rect.left,
+            y: evt.clientY - rect.top,
+          };
+        }
+
+        canvas.addEventListener("mousedown", (evt) => {
+          const { x, y } = getMousePos(evt);
+          hoverNodeId = nodeAt(x, y);
+          hoverEdgeIndex = edgeAt(x, y);
+
+          if (mode === modes.ADD) {
+            if (hoverNodeId) {
+              // start dragging existing node
+              draggingNodeId = hoverNodeId;
+              const n = getNode(draggingNodeId);
+              dragOffset.x = x - n.x;
+              dragOffset.y = y - n.y;
+              selectedNodeId = draggingNodeId;
+              selectedEdgeIndex = null;
+            } else {
+              // add a new node
+              const id = addNode(x, y);
+              selectedNodeId = id;
+              selectedEdgeIndex = null;
+            }
+            draw();
+          } else if (mode === modes.EDGE) {
+            if (hoverNodeId) {
+              edgeDragFromId = hoverNodeId;
+              edgePreviewTo = { x, y };
+              selectedNodeId = hoverNodeId;
+              selectedEdgeIndex = null;
+            } else if (hoverEdgeIndex != null) {
+              selectedEdgeIndex = hoverEdgeIndex;
+              selectedNodeId = null;
+            } else {
+              selectedNodeId = null;
+              selectedEdgeIndex = null;
+            }
+            draw();
+          } else if (mode === modes.SELECT) {
+            if (hoverNodeId) {
+              if (!startNodeId || (startNodeId && goalNodeId)) {
+                startNodeId = hoverNodeId;
+                goalNodeId = null;
+                clearPath();
+              } else if (startNodeId && !goalNodeId) {
+                if (hoverNodeId !== startNodeId) {
+                  goalNodeId = hoverNodeId;
+                  clearPath();
+                } else {
+                  // clicking the same node toggles start off
+                  startNodeId = null;
+                  clearPath();
+                }
+              }
+              selectedNodeId = hoverNodeId;
+              selectedEdgeIndex = null;
+            } else if (hoverEdgeIndex != null) {
+              selectedEdgeIndex = hoverEdgeIndex;
+              selectedNodeId = null;
+            } else {
+              selectedNodeId = null;
+              selectedEdgeIndex = null;
+            }
+            draw();
+          }
+        });
+
+        canvas.addEventListener("mousemove", (evt) => {
+          const { x, y } = getMousePos(evt);
+          // update hover
+          hoverNodeId = nodeAt(x, y);
+          hoverEdgeIndex = hoverNodeId ? null : edgeAt(x, y);
+
+          if (mode === modes.ADD && draggingNodeId) {
+            const n = getNode(draggingNodeId);
+            n.x = x - dragOffset.x;
+            n.y = y - dragOffset.y;
+            clearPath(); // movement may change default weights if reset later, but we keep existing weights
+            draw();
+            return;
+          }
+
+          if (mode === modes.EDGE && edgeDragFromId) {
+            edgePreviewTo = { x, y };
+            draw();
+            return;
+          }
+
+          draw();
+        });
+
+        canvas.addEventListener("mouseup", (evt) => {
+          const { x, y } = getMousePos(evt);
+          if (mode === modes.ADD && draggingNodeId) {
+            draggingNodeId = null;
+            draw();
+            return;
+          }
+          if (mode === modes.EDGE && edgeDragFromId) {
+            const targetId = nodeAt(x, y);
+            if (targetId && targetId !== edgeDragFromId) {
+              addEdge(edgeDragFromId, targetId);
+            }
+            edgeDragFromId = null;
+            edgePreviewTo = null;
+            draw();
+            return;
+          }
+        });
+
+        canvas.addEventListener("mouseleave", () => {
+          if (mode === modes.ADD) draggingNodeId = null;
+          edgeDragFromId = null;
+          edgePreviewTo = null;
+          hoverNodeId = null;
+          hoverEdgeIndex = null;
+          draw();
+        });
+
+        // Keyboard shortcuts (delete)
+        window.addEventListener("keydown", (e) => {
+          if (e.key === "Delete" || e.key === "Backspace") {
+            onDeleteSelected();
+          }
+        });
+
+        // Toolbar actions
+        btnModeAdd.addEventListener("click", () => setMode(modes.ADD));
+        btnModeEdge.addEventListener("click", () => setMode(modes.EDGE));
+        btnModeSelect.addEventListener("click", () => setMode(modes.SELECT));
+
+        btnRun.addEventListener("click", () => runAStar());
+        btnClearPath.addEventListener("click", () => {
+          clearPath();
+          draw();
+        });
+        btnClearGraph.addEventListener("click", () => {
+          clearGraph();
+          draw();
+        });
+        btnDelete.addEventListener("click", () => onDeleteSelected());
+        btnEditWeight.addEventListener("click", () => onEditWeight());
+
+        nodeRadiusInput.addEventListener("change", () => {
+          const val = parseInt(nodeRadiusInput.value, 10);
+          if (!isNaN(val) && val >= 6 && val <= 28) {
+            nodeRadius = val;
+            draw();
+          }
+        });
+
+        function onDeleteSelected() {
+          if (selectedNodeId) {
+            removeNode(selectedNodeId);
+            selectedNodeId = null;
+            draw();
+            return;
+          }
+          if (selectedEdgeIndex != null) {
+            removeEdgeByIndex(selectedEdgeIndex);
+            selectedEdgeIndex = null;
+            draw();
+            return;
+          }
+        }
+
+        function onEditWeight() {
+          // If an edge is selected, edit it
+          let idx = selectedEdgeIndex;
+          if (idx == null) {
+            // allow selecting by two nodes if both selected? We only hold one selected node.
+            // Alternative: click near an edge to select, or infer nearest edge under cursor.
+            if (hoverEdgeIndex != null) idx = hoverEdgeIndex;
+          }
+          if (idx == null) {
+            // If user has a node selected, try to pick nearest edge connected?
+            if (selectedNodeId) {
+              // find incident edge closest to cursor (hoverEdgeIndex may help)
+              idx = hoverEdgeIndex;
+            }
+          }
+          if (idx == null) {
+            alert("Select an edge (click near its middle) to edit weight.");
+            return;
+          }
+          const e = edges[idx];
+          const val = prompt("Set edge weight:", String(e.w));
+          if (val == null) return;
+          const num = Number(val);
+          if (!isNaN(num) && num > 0) {
+            e.w = num;
+            clearPath();
+            draw();
+          } else {
+            alert("Please enter a positive number.");
+          }
+        }
+
+        // Initial draw
+        draw();
+      })();
+    </script>
+  </body>
+</html>
